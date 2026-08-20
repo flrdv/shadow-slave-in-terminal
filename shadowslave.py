@@ -1,6 +1,6 @@
 import argparse
 import sys
-import time
+import traceback
 import requests
 import sqlite3
 import curses
@@ -126,7 +126,7 @@ class Screen:
     def __init__(self, line: int):
         curses.set_escdelay(25)
         self.scr = curses.initscr()
-        self.line = line
+        self._line = line
 
     def start(self):
         curses.noecho()
@@ -134,46 +134,52 @@ class Screen:
         curses.curs_set(False)
 
     @staticmethod
-    def _prepare_lines(title: str, blocks: list[str], width: int) -> list[str]:
-        lines = [title, "", ""]
+    def _prepare_lines(title: str, blocks: list[str], width: int) -> list[tuple[str, int] | str]:
+        lines = [(title, curses.A_BOLD), "", ""]
         for block in blocks:
             for l in wrap(block, width=width):
                 lines.append(l)
             lines.append("")
+        lines.append("")
+        lines.append(("КОНЕЦ ГЛАВЫ", curses.A_BOLD))
         return lines
 
     def scroll(self, title: str, blocks: list[str]) -> Action:
         width = min(curses.COLS, TEXT_WIDTH)
         lines = self._prepare_lines(title, blocks, width)
+
         pad = curses.newpad(len(lines), width)
         pad.keypad(True)
 
-        for y, l in enumerate(lines):
-            attrs = (curses.A_BOLD,) if y == 0 else () # make the title bold
-            pad.addstr(y,0, l, *attrs)
+        for y, line in enumerate(lines):
+            attr = curses.A_NORMAL
+            if isinstance(line, tuple):
+                line, attr = line
+            pad.addstr(y,0, line, attr)
 
         bottom = len(lines) - curses.LINES
-        if self.line > bottom:
-            self.line = bottom
+
+        if self._line > bottom:
+            self._line = bottom
 
         while True:
-            if self.line > bottom: 
-                self.line = bottom
-            if self.line < 0: 
-                self.line = 0
+            if self._line > bottom: 
+                self._line = bottom
+            if self._line < 0: 
+                self._line = 0
 
             try:
-                pad.refresh(self.line,0, 0,0, curses.LINES-1,width)
+                pad.refresh(self._line,0, 0,0, curses.LINES-1,width)
 
                 ch = pad.getch()
-                if ch == curses.KEY_UP:      self.line -= SCROLL_STEP
-                elif ch == curses.KEY_DOWN:  self.line += SCROLL_STEP
-                elif ch == curses.KEY_HOME:  self.line = 0
-                elif ch == curses.KEY_END:   self.line = bottom
-                elif ch == curses.KEY_NPAGE: self.line += curses.LINES
-                elif ch == curses.KEY_PPAGE: self.line -= curses.LINES
-                elif ch == curses.KEY_LEFT:  return Action.PREV
-                elif ch == curses.KEY_RIGHT: return Action.NEXT
+                if ch == curses.KEY_UP:      self._line -= SCROLL_STEP
+                elif ch == curses.KEY_DOWN:  self._line += SCROLL_STEP
+                elif ch == curses.KEY_HOME:  self._line = 0
+                elif ch == curses.KEY_END:   self._line = bottom
+                elif ch == curses.KEY_NPAGE: self._line += curses.LINES
+                elif ch == curses.KEY_PPAGE: self._line -= curses.LINES
+                elif ch == curses.KEY_LEFT:  self._line = 0; return Action.PREV
+                elif ch == curses.KEY_RIGHT: self._line = 0; return Action.NEXT
                 elif ch == ord('q'):         return Action.EXIT
                 elif ch == 27: # ESC or ALT
                     pad.nodelay(True)
@@ -187,6 +193,12 @@ class Screen:
                     return Action.RELOAD
             except KeyboardInterrupt:
                 return Action.EXIT
+
+    def line(self) -> int:
+        return self._line
+
+    def bottom_line(self) -> int:
+        return self.line() + curses.LINES
 
     def print(self, text: str):
         self.scr.clear()
@@ -235,15 +247,13 @@ def display_chapter(screen: Screen, cache: Cache, chapter: int) -> tuple[int, fl
 
         if action == Action.PREV and chapter > DEFAULT_CHAPTER:
             chapter -= 1
-            screen.line = 0
         elif action == Action.NEXT and chapter < MOST_RECENT_CHAPTER:
             chapter += 1
-            screen.line = 0
 
-        cache.save_progress(chapter, screen.line)
+        cache.save_progress(chapter, screen.line())
 
         if action == Action.EXIT:
-            return chapter, estimate_read_percentage(blocks, screen.line)
+            return chapter, estimate_read_percentage(blocks, screen.bottom_line())
 
 
 def estimate_read_percentage(blocks: list[str], line: int) -> float:
@@ -265,7 +275,8 @@ def main():
         print("Error:", e.msg, end="\r\n")
     except Exception as e:
         screen.stop()
-        print("Unexpected error:", e, end="\r\n")
+        print("Unexpected error:", end="\r\n")
+        print(traceback.format_exc())
     else:
         screen.stop()
         print(f"Ended at chapter {chapter} ({estimated_percentage:.2%})", end="\r\n")    
