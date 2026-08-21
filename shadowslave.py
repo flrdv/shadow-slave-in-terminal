@@ -159,9 +159,6 @@ class Screen:
 
         bottom = len(lines) - curses.LINES
 
-        if self._line > bottom:
-            self._line = bottom
-
         while True:
             if self._line > bottom: 
                 self._line = bottom
@@ -197,8 +194,8 @@ class Screen:
     def line(self) -> int:
         return self._line
 
-    def bottom_line(self) -> int:
-        return self.line() + curses.LINES
+    def height(self) -> int:
+        return curses.LINES
 
     def print(self, text: str):
         self.scr.clear()
@@ -249,15 +246,16 @@ def display_chapter(screen: Screen, cache: Cache, chapter: int) -> tuple[int, fl
             chapter -= 1
         elif action == Action.NEXT and chapter < MOST_RECENT_CHAPTER:
             chapter += 1
+        elif action == Action.EXIT:
+            cache.save_progress(chapter, screen.line())
 
-        cache.save_progress(chapter, screen.line())
-
-        if action == Action.EXIT:
-            return chapter, estimate_read_percentage(blocks, screen.bottom_line())
+            return chapter, count_read_percentage(screen, blocks)
 
 
-def estimate_read_percentage(blocks: list[str], line: int) -> float:
-    return line / len(Screen._prepare_lines("", blocks, TEXT_WIDTH))
+def count_read_percentage(screen: Screen, blocks: list[str]) -> float:
+    lines = len(Screen._prepare_lines("", blocks, TEXT_WIDTH)) - screen.height()
+
+    return screen.line() / lines
 
 
 def main():
@@ -269,7 +267,7 @@ def main():
     screen.start()
 
     try:
-        chapter, estimated_percentage = display_chapter(screen, cache, chapter)
+        chapter, read_percentage = display_chapter(screen, cache, chapter)
     except DisplayError as e:
         screen.stop()
         print("Error:", e.msg, end="\r\n")
@@ -279,7 +277,7 @@ def main():
         print(traceback.format_exc())
     else:
         screen.stop()
-        print(f"Ended at chapter {chapter} ({estimated_percentage:.2%})", end="\r\n")    
+        print(f"Ended at chapter {chapter} ({read_percentage:.2%})", end="\r\n")    
 
 
 if __name__ == "__main__":
