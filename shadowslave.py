@@ -158,6 +158,7 @@ class Screen:
             pad.addstr(y,0, line, attr)
 
         bottom = len(lines) - curses.LINES
+        jump_from_line = None
 
         while True:
             if self._line > bottom: 
@@ -169,22 +170,32 @@ class Screen:
                 pad.refresh(self._line,0, 0,0, curses.LINES-1,width)
 
                 ch = pad.getch()
-                if ch == curses.KEY_UP:      self._line -= SCROLL_STEP
-                elif ch == curses.KEY_DOWN:  self._line += SCROLL_STEP
-                elif ch == curses.KEY_HOME:  self._line = 0
-                elif ch == curses.KEY_END:   self._line = bottom
-                elif ch == curses.KEY_NPAGE: self._line += curses.LINES
-                elif ch == curses.KEY_PPAGE: self._line -= curses.LINES
-                elif ch == curses.KEY_LEFT:  self._line = 0; return Action.PREV
-                elif ch == curses.KEY_RIGHT: self._line = 0; return Action.NEXT
-                elif ch == ord('q'):         return Action.EXIT
+                if ch == curses.KEY_UP:
+                    self._line -= SCROLL_STEP
+                elif ch == curses.KEY_DOWN:
+                    self._line += SCROLL_STEP
+                elif ch == curses.KEY_HOME:
+                    self._line, jump_from_line = jump_from_line or 0, None
+                elif ch == curses.KEY_END:
+                    jump_from_line = self._line; self._line = bottom
+                elif ch == curses.KEY_NPAGE:
+                    self._line += curses.LINES
+                elif ch == curses.KEY_PPAGE:
+                    self._line -= curses.LINES
+                elif ch == curses.KEY_LEFT:
+                    self._line = 0
+                    return Action.PREV
+                elif ch == curses.KEY_RIGHT:
+                    self._line = 0
+                    return Action.NEXT
+                elif ch == ord('q'):
+                    return Action.EXIT
                 elif ch == 27: # ESC or ALT
                     pad.nodelay(True)
                     ch2 = pad.getch()
                     pad.nodelay(False)
                     if ch2 == curses.ERR:
-                        # indeed ESC
-                        return Action.EXIT
+                        return Action.EXIT # indeed ESC
                 elif ch == curses.KEY_RESIZE:
                     curses.update_lines_cols()
                     return Action.RELOAD
@@ -229,7 +240,7 @@ def fetch_chapter(cache: Cache, chapter: int) -> tuple[str, list[str]]:
     return (parser.article_title, parser.article_content)
 
 
-def display_chapter(screen: Screen, cache: Cache, chapter: int) -> tuple[int, float]:
+def viewbox(screen: Screen, cache: Cache, chapter: int) -> tuple[int, float]:
     while True:
         contents = cache.get(chapter)
         if contents is None:
@@ -267,7 +278,7 @@ def main():
     screen.start()
 
     try:
-        chapter, read_percentage = display_chapter(screen, cache, chapter)
+        chapter, read_percentage = viewbox(screen, cache, chapter)
     except DisplayError as e:
         screen.stop()
         print("Error:", e.msg, end="\r\n")
