@@ -1,5 +1,5 @@
 import argparse
-import sys
+import math
 import traceback
 import requests
 import sqlite3
@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 
 TEXT_WIDTH = 90
 SCROLL_STEP = 3
+SCROLLBAR_INDENT = 3
 
 DEFAULT_CHAPTER = 989
 
@@ -122,6 +123,34 @@ class Action:
     RELOAD: int = 3
 
 
+SCROLLBAR_DEFAULT_CHAR = "│"
+SCROLLBAR_PAGELOC_CHAR = "▌"
+
+
+class Scrollbar:
+    def __init__(self, lines: int):
+        barwidth = SCROLLBAR_INDENT+1
+        self.bar = curses.newwin(curses.LINES+1,barwidth, 0,curses.COLS-barwidth)
+        self.bar.clear()
+        self.lines = lines
+        self.slider = math.ceil(curses.LINES**2 / lines)
+        self.coeff = curses.LINES/lines
+
+    def refresh(self, pageline: int):
+        offset = math.floor(pageline*self.coeff)
+        bar = range(offset, offset+self.slider)
+
+        for y in range(curses.LINES):
+            char = SCROLLBAR_PAGELOC_CHAR if y in bar else SCROLLBAR_DEFAULT_CHAR
+            self.bar.addstr(y,SCROLLBAR_INDENT, char)
+
+        self.bar.refresh()
+
+    def clear(self):
+        self.bar.clear()
+        self.bar.refresh()
+
+
 class Screen:
     def __init__(self, line: int):
         curses.set_escdelay(25)
@@ -133,29 +162,46 @@ class Screen:
         curses.cbreak()
         curses.curs_set(False)
 
+    def line(self) -> int:
+        return self._line
+
     @staticmethod
-    def _prepare_lines(title: str, blocks: list[str], width: int) -> list[tuple[str, int] | str]:
-        lines = [(title, curses.A_BOLD), "", ""]
+    def height() -> int:
+        return curses.LINES
+
+    @staticmethod
+    def width() -> int:
+        return min(curses.COLS-SCROLLBAR_INDENT-1, TEXT_WIDTH)
+
+    @staticmethod
+    def format_lines(title: str, blocks: list[str]) -> list[tuple[str, int]]:
+        normalline = lambda s: (s, curses.A_NORMAL)
+        emptyline = normalline("")
+        lines = [(title, curses.A_BOLD), emptyline, emptyline]
         for block in blocks:
-            for l in wrap(block, width=width):
-                lines.append(l)
-            lines.append("")
-        lines.append("")
+            for l in wrap(block, width=Screen.width()):
+                lines.append(normalline(l))
+            lines.append(emptyline)
+        lines.append(emptyline)
         lines.append(("КОНЕЦ ГЛАВЫ", curses.A_BOLD))
         return lines
 
     def scroll(self, title: str, blocks: list[str]) -> Action:
-        width = min(curses.COLS, TEXT_WIDTH)
-        lines = self._prepare_lines(title, blocks, width)
+        action = Action.RELOAD
+        while action == Action.RELOAD:
+            action = self._scroll(title, blocks)
+        return action
 
-        pad = curses.newpad(len(lines), width)
-        pad.keypad(True)
+    def _scroll(self, title: str, blocks: list[str]) -> Action:
+        width = self.width()
+        lines = self.format_lines(title, blocks)
 
-        for y, line in enumerate(lines):
-            attr = curses.A_NORMAL
-            if isinstance(line, tuple):
-                line, attr = line
-            pad.addstr(y,0, line, attr)
+        viewbox = curses.newpad(len(lines), width)
+        viewbox.keypad(True)
+        for y, (line, attr) in enumerate(lines):
+            viewbox.addstr(y,0, line, attr)
+
+        scrollbar = Scrollbar(len(lines))
 
         bottom = len(lines) - curses.LINES
         jump_from_line = None
@@ -167,9 +213,10 @@ class Screen:
                 self._line = 0
 
             try:
-                pad.refresh(self._line,0, 0,0, curses.LINES-1,width)
+                scrollbar.refresh(self._line)
+                viewbox.refresh(self._line,0, 0,0, curses.LINES-1,width)
 
-                ch = pad.getch()
+                ch = viewbox.getch()
                 if ch == curses.KEY_UP:
                     self._line -= SCROLL_STEP
                 elif ch == curses.KEY_DOWN:
@@ -191,22 +238,17 @@ class Screen:
                 elif ch == ord('q'):
                     return Action.EXIT
                 elif ch == 27: # ESC or ALT
-                    pad.nodelay(True)
-                    ch2 = pad.getch()
-                    pad.nodelay(False)
+                    viewbox.nodelay(True)
+                    ch2 = viewbox.getch()
+                    viewbox.nodelay(False)
                     if ch2 == curses.ERR:
                         return Action.EXIT # indeed ESC
                 elif ch == curses.KEY_RESIZE:
                     curses.update_lines_cols()
+                    scrollbar.clear()
                     return Action.RELOAD
             except KeyboardInterrupt:
-                return Action.EXIT
-
-    def line(self) -> int:
-        return self._line
-
-    def height(self) -> int:
-        return curses.LINES
+                return Action.EXIT  
 
     def print(self, text: str):
         self.scr.clear()
@@ -249,22 +291,19 @@ def viewbox(screen: Screen, cache: Cache, chapter: int) -> tuple[int, float]:
 
         title, blocks = contents
 
-        action = Action.RELOAD
-        while action == Action.RELOAD:
-            action = screen.scroll(title, blocks)
+        action = screen.scroll(title, blocks)
+        cache.save_progress(chapter, screen.line())
 
         if action == Action.PREV and chapter > DEFAULT_CHAPTER:
             chapter -= 1
         elif action == Action.NEXT and chapter < MOST_RECENT_CHAPTER:
             chapter += 1
         elif action == Action.EXIT:
-            cache.save_progress(chapter, screen.line())
-
             return chapter, count_read_percentage(screen, blocks)
 
 
 def count_read_percentage(screen: Screen, blocks: list[str]) -> float:
-    lines = len(Screen._prepare_lines("", blocks, TEXT_WIDTH)) - screen.height()
+    lines = len(Screen.format_lines("", blocks)) - screen.height()
 
     return screen.line() / lines
 
